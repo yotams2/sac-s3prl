@@ -65,7 +65,7 @@ class SpeakerClassifiDataset(Dataset):
             pair = string.split()
             index = pair[0]
             if int(index) == 1:
-                x = list(self.root.glob("*/wav/" + pair[1]))
+                x = list(self.root.glob("wav/" + pair[1]))
                 dataset.append(str(x[0]))
         print("finish searching training set wav")
                 
@@ -79,7 +79,7 @@ class SpeakerClassifiDataset(Dataset):
             pair = string.split()
             index = pair[0]
             if int(index) == 2:
-                x = list(self.root.glob("*/wav/" + pair[1]))
+                x = list(self.root.glob("wav/" + pair[1]))
                 dataset.append(str(x[0])) 
         print("finish searching dev set wav")
 
@@ -93,7 +93,7 @@ class SpeakerClassifiDataset(Dataset):
             pair = string.split()
             index = pair[0]
             if int(index) == 3:
-                x = list(self.root.glob("*/wav/" + pair[1]))
+                x = list(self.root.glob("wav/" + pair[1]))
                 dataset.append(str(x[0])) 
         print("finish searching test set wav")
 
