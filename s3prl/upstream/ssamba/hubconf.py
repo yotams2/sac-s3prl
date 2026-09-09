@@ -75,3 +75,10 @@ def ssamba_local(ckpt, refresh: bool = False, window_secs: float = 10.0, **kwarg
     if str(ckpt).startswith("http"):
         ckpt = _urls_to_filepaths(ckpt, refresh=refresh)
     return _UpstreamExpert(ckpt, "base_a", window_secs)
+
+def binaural_sac_local(ckpt, refresh: bool = False, window_secs: float = 10.0, **kwargs):
+    window_secs = _get_window_secs(10.0, window_secs)
+    if str(ckpt).startswith("http"):
+        ckpt = _urls_to_filepaths(ckpt, refresh=refresh)
+    return _UpstreamExpert(ckpt, "binaural_sac", window_secs)
+

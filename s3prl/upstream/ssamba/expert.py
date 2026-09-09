@@ -32,8 +32,26 @@ class UpstreamExpert(torch.nn.Module):
         self.stride_secs = window_secs
         
         
-        model_size, model_type = model_size.split("_")[0], model_size.split("_")[1]
+        model_size_parts = model_size.split("_")
+        model_size_base = model_size_parts[0]
+        model_type = model_size_parts[1] if len(model_size_parts) > 1 else ""
         
+        if model_size == "binaural_sac":
+            target_length = int(window_secs * SAMPLE_RATE / FBANK_SAMPLE_STRIDE)
+            self.preprocessor = FeatureExtractor(
+                target_length=target_length, apply_cmvn=False
+            )
+            import sys
+            import os
+            sys.path.insert(0, '/storage/yotam/ssamba/src')
+            from binaural_dual_stream_sac.downstream_experts import MonauralSpectralUpstreamExpert
+            self.model = MonauralSpectralUpstreamExpert(model_checkpoint_path=ckpt)
+            self.tstride = 10
+            self.vertical_num_patches = 1
+            self.model = self.model.cpu()
+            self.model_size = model_size
+            return
+            
         from .ast_models import AMBAModel
 
         try:
@@ -147,7 +165,16 @@ class UpstreamExpert(torch.nn.Module):
         num_segment, batch_size, segment_seq_len, hidden_size = all_features.shape
 
         flatten_features = all_features.reshape(-1, segment_seq_len, hidden_size)
-        hidden_states, final_repr = self.model(flatten_features)
+        
+        if hasattr(self, 'model_size') and self.model_size == 'binaural_sac':
+            x_mono = flatten_features.transpose(1, 2).unsqueeze(1)
+            x_4ch = x_mono.repeat(1, 4, 1, 1).to(self.model.spectral_encoder.v.patch_embed.proj.weight.device)
+            with torch.no_grad():
+                h = self.model.spectral_encoder._encode_with_mamba(x_4ch)
+            h = h[:, 1:, :] # Skip CLS token
+            hidden_states = [h.cpu()]
+        else:
+            hidden_states, final_repr = self.model(flatten_features)
 
         reshaped_hidden_states = [
             (
