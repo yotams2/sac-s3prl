@@ -1,7 +1,10 @@
 import torch
 from torch.utils.data import DataLoader, Dataset
 import numpy as np 
-from librosa.util import find_files
+try:
+    from librosa.util import find_files
+except ImportError:
+    pass
 from torchaudio import load
 from torch import nn
 import os 
@@ -28,20 +31,39 @@ class SpeakerClassifiDataset(Dataset):
         self.max_timestep = max_timestep
         self.usage_list = open(self.meta_data, "r").readlines()
 
-        cache_path = os.path.join(CACHE_PATH, f'{mode}.pkl')
-        if os.path.isfile(cache_path):
-            print(f'[SpeakerClassifiDataset] - Loading file paths from {cache_path}')
-            with open(cache_path, 'rb') as cache:
-                dataset = pickle.load(cache)
-        else:
-            dataset = eval("self.{}".format(mode))()
-            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-            with open(cache_path, 'wb') as cache:
-                pickle.dump(dataset, cache)
-        print(f'[SpeakerClassifiDataset] - there are {len(dataset)} files found')
+        split_name = "pretrain" if mode == "train" else ("preval" if mode == "dev" else "pretest")
+        spatial_json = f"/storage/yotam/ssamba/data/voxceleb1_spatial_{split_name}.json"
+        # Distinct check for binaural/simulated VoxCeleb1 vs legacy monaural (/storage/data/voxceleb1)
+        is_spatial = (
+            (Path(file_path) / "simu").exists()
+            or (Path(file_path) / "pretest").exists()
+            or "simu" in str(file_path)
+            or "ssamba/data/VoxCeleb1" in str(file_path)
+        ) and os.path.exists(spatial_json)
 
-        self.dataset = dataset
-        self.label = self.build_label(self.dataset)
+        if is_spatial:
+            print(f'[SpeakerClassifiDataset] - Loading spatialized VoxCeleb1 from {spatial_json}')
+            import json
+            with open(spatial_json, 'r') as fp:
+                items = json.load(fp)['data']
+            self.dataset = [item['wav'] for item in items]
+            self.label = [int(item['label']) for item in items]
+            print(f'[SpeakerClassifiDataset] - Loaded {len(self.dataset)} files for mode {mode}')
+        else:
+            cache_path = os.path.join(CACHE_PATH, f'{mode}.pkl')
+            if os.path.isfile(cache_path):
+                print(f'[SpeakerClassifiDataset] - Loading file paths from {cache_path}')
+                with open(cache_path, 'rb') as cache:
+                    dataset = pickle.load(cache)
+            else:
+                dataset = eval("self.{}".format(mode))()
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                with open(cache_path, 'wb') as cache:
+                    pickle.dump(dataset, cache)
+            print(f'[SpeakerClassifiDataset] - there are {len(dataset)} files found')
+
+            self.dataset = dataset
+            self.label = self.build_label(self.dataset)
 
     # file_path/id0001/asfsafs/xxx.wav
     def build_label(self, train_path_list):
@@ -104,7 +126,11 @@ class SpeakerClassifiDataset(Dataset):
     
     def __getitem__(self, idx):
         wav, sr = torchaudio.load(self.dataset[idx])
-        wav = wav.squeeze(0)
+        if wav.ndim == 2 and wav.shape[0] > 1:
+            # Spatialized binaural audio: select Left channel for monaural downstream task
+            wav = wav[0]
+        else:
+            wav = wav.squeeze(0)
         length = wav.shape[0]
 
         if self.max_timestep !=None:
@@ -114,7 +140,10 @@ class SpeakerClassifiDataset(Dataset):
                 length = self.max_timestep
 
         def path2name(path):
-            return Path("-".join((Path(path).parts)[-3:])).stem
+            parts = Path(path).parts
+            if len(parts) >= 3:
+                return Path("-".join(parts[-3:])).stem
+            return Path(path).stem
 
         path = self.dataset[idx]
         return wav.numpy(), self.label[idx], path2name(path)

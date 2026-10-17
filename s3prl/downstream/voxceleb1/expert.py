@@ -90,7 +90,8 @@ class DownstreamExpert(nn.Module):
 
     # Interface
     def forward(self, mode, features, labels, filenames, records, **kwargs):
-        device = features[0].device
+        device = self.projector.weight.device
+        features = [feat.to(device) for feat in features]
         features_len = torch.IntTensor([len(feat) for feat in features]).to(device=device)
         features = pad_sequence(features, batch_first=True)
         features = self.projector(features)

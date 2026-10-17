@@ -37,17 +37,16 @@ class UpstreamExpert(torch.nn.Module):
         model_type = model_size_parts[1] if len(model_size_parts) > 1 else ""
         
         if model_size == "binaural_sac":
-            target_length = int(window_secs * SAMPLE_RATE / FBANK_SAMPLE_STRIDE)
-            self.preprocessor = FeatureExtractor(
-                target_length=target_length, apply_cmvn=False
-            )
             import sys
             import os
+            sys.path.insert(0, '/storage/yotam/ssamba/Vim')
+            sys.path.insert(0, '/storage/yotam/ssamba/Vim/vim')
+            sys.path.insert(0, '/storage/yotam/ssamba/Vim/mamba-1p1p1')
             sys.path.insert(0, '/storage/yotam/ssamba/src')
             from binaural_dual_stream_sac.downstream_experts import MonauralSpectralUpstreamExpert
             self.model = MonauralSpectralUpstreamExpert(model_checkpoint_path=ckpt)
-            self.tstride = 10
-            self.vertical_num_patches = 1
+            self.tstride = 16
+            self.vertical_num_patches = 16
             self.model = self.model.cpu()
             self.model_size = model_size
             return
@@ -140,6 +139,58 @@ class UpstreamExpert(torch.nn.Module):
         return int(FBANK_SAMPLE_STRIDE * self.tstride)
 
     def forward(self, wavs):
+        if hasattr(self, 'model_size') and self.model_size == 'binaural_sac':
+            device = self.model.spectral_encoder.v.patch_embed.proj.weight.device
+            stft_4ch_list = []
+            for wav in wavs:
+                if wav.ndim == 1:
+                    w = wav.cpu().float()
+                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
+                    re, im = stft.real, stft.imag
+                    x_4ch = torch.stack([re, im, re, im], dim=0)
+                elif wav.ndim == 2 and wav.shape[0] >= 2:
+                    wL = wav[0].cpu().float()
+                    wR = wav[1].cpu().float()
+                    stft_L = torch.stft(wL, n_fft=512, hop_length=160, return_complex=True)
+                    stft_R = torch.stft(wR, n_fft=512, hop_length=160, return_complex=True)
+                    x_4ch = torch.stack([stft_L.real, stft_L.imag, stft_R.real, stft_R.imag], dim=0)
+                else:
+                    w = wav.squeeze(0).cpu().float()
+                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
+                    re, im = stft.real, stft.imag
+                    x_4ch = torch.stack([re, im, re, im], dim=0)
+
+                # Frequency dimension to 256
+                if x_4ch.shape[1] > 256:
+                    x_4ch = x_4ch[:, :256, :]
+                elif x_4ch.shape[1] < 256:
+                    x_4ch = torch.nn.functional.pad(x_4ch, (0, 0, 0, 256 - x_4ch.shape[1]))
+
+                # Time dimension to 1024
+                if x_4ch.shape[2] < 1024:
+                    x_4ch = torch.nn.functional.pad(x_4ch, (0, 1024 - x_4ch.shape[2]))
+                elif x_4ch.shape[2] > 1024:
+                    x_4ch = x_4ch[:, :, :1024]
+
+                stft_4ch_list.append(x_4ch)
+
+            batch_x_4ch = torch.stack(stft_4ch_list, dim=0).to(device)
+            with torch.no_grad():
+                h = self.model.spectral_encoder._encode_with_mamba(batch_x_4ch)
+            h = h[:, 1:, :] # Skip CLS token -> [B, 1024, 768]
+            B = batch_x_4ch.size(0)
+            h = h.reshape(B, 16, 64, h.size(-1)).mean(dim=1).float() # [B, 64, 768]
+
+            trimmed_hidden_states = []
+            for wav_idx, wav in enumerate(wavs):
+                w_len = wav.shape[-1]
+                max_h_len = min(64, max(1, round(w_len / self.get_downsample_rates())))
+                trimmed_hidden_states.append(h[wav_idx, :max_h_len, :])
+
+            from torch.nn.utils.rnn import pad_sequence
+            padded_h = pad_sequence(trimmed_hidden_states, batch_first=True)
+            return {"hidden_states": [padded_h.to(device)]}
+
         wavs_len = [len(wav) for wav in wavs]
         max_wav_len = max(wavs_len)
         start_points = list(range(0, max_wav_len, int(self.stride_secs * SAMPLE_RATE)))
