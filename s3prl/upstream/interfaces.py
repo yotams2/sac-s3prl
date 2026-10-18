@@ -190,7 +190,7 @@ class Featurizer(nn.Module):
             )
         else:
             self.downsample_rate = round(
-                max(len(wav) for wav in paired_wavs) / feature.size(1)
+                max(wav.shape[-1] for wav in paired_wavs) / feature.size(1)
             )
             show(
                 f"[{self.name}] - Warning: The provided upstream does not give statis downsample rate"
@@ -249,10 +249,11 @@ class Featurizer(nn.Module):
 
     def tolist(self, paired_wavs: List[Tensor], paired_feature: Tensor):
         assert paired_feature.dim() == 3, "(batch_size, max_seq_len, feat_dim)"
-        feature_len = [round(len(wav) / self.downsample_rate) for wav in paired_wavs]
+        wav_lens = [wav.shape[-1] for wav in paired_wavs]
+        feature_len = [round(l / self.downsample_rate) for l in wav_lens]
         length_diff = abs(
             paired_feature.size(1)
-            - round(max([len(wav) for wav in paired_wavs]) / self.downsample_rate)
+            - round(max(wav_lens) / self.downsample_rate)
         )
         assert (
             length_diff < TOLERABLE_SEQLEN_DIFF

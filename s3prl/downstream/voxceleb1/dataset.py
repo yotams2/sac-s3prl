@@ -126,17 +126,18 @@ class SpeakerClassifiDataset(Dataset):
     
     def __getitem__(self, idx):
         wav, sr = torchaudio.load(self.dataset[idx])
-        if wav.ndim == 2 and wav.shape[0] > 1:
-            # Spatialized binaural audio: select Left channel for monaural downstream task
-            wav = wav[0]
-        else:
+        if wav.ndim == 2 and wav.shape[0] == 1:
             wav = wav.squeeze(0)
-        length = wav.shape[0]
+        # For multi-channel audio (e.g. binaural [2, T]), preserve both channels!
+        length = wav.shape[-1]
 
-        if self.max_timestep !=None:
+        if self.max_timestep is not None:
             if length > self.max_timestep:
-                start = random.randint(0, int(length-self.max_timestep))
-                wav = wav[start:start+self.max_timestep]
+                start = random.randint(0, int(length - self.max_timestep))
+                if wav.ndim == 2:
+                    wav = wav[:, start:start + self.max_timestep]
+                else:
+                    wav = wav[start:start + self.max_timestep]
                 length = self.max_timestep
 
         def path2name(path):

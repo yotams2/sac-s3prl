@@ -136,6 +136,8 @@ class UpstreamExpert(torch.nn.Module):
         self.model = self.model.cpu()
 
     def get_downsample_rates(self, key: str = None) -> int:
+        if hasattr(self, 'model_size') and self.model_size == 'binaural_sac':
+            return 160 * self.tstride
         return int(FBANK_SAMPLE_STRIDE * self.tstride)
 
     def forward(self, wavs):
@@ -143,17 +145,17 @@ class UpstreamExpert(torch.nn.Module):
             device = self.model.spectral_encoder.v.patch_embed.proj.weight.device
             stft_4ch_list = []
             for wav in wavs:
-                if wav.ndim == 1:
-                    w = wav.cpu().float()
-                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
-                    re, im = stft.real, stft.imag
-                    x_4ch = torch.stack([re, im, re, im], dim=0)
-                elif wav.ndim == 2 and wav.shape[0] >= 2:
+                if wav.ndim == 2 and wav.shape[0] >= 2:
                     wL = wav[0].cpu().float()
                     wR = wav[1].cpu().float()
                     stft_L = torch.stft(wL, n_fft=512, hop_length=160, return_complex=True)
                     stft_R = torch.stft(wR, n_fft=512, hop_length=160, return_complex=True)
                     x_4ch = torch.stack([stft_L.real, stft_L.imag, stft_R.real, stft_R.imag], dim=0)
+                elif wav.ndim == 1:
+                    w = wav.cpu().float()
+                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
+                    re, im = stft.real, stft.imag
+                    x_4ch = torch.stack([re, im, re, im], dim=0)
                 else:
                     w = wav.squeeze(0).cpu().float()
                     stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
@@ -175,11 +177,13 @@ class UpstreamExpert(torch.nn.Module):
                 stft_4ch_list.append(x_4ch)
 
             batch_x_4ch = torch.stack(stft_4ch_list, dim=0).to(device)
-            with torch.no_grad():
-                h = self.model.spectral_encoder._encode_with_mamba(batch_x_4ch)
+            # Allow gradients when runner is in upstream_trainable mode (-f)
+            h = self.model.spectral_encoder._encode_with_mamba(batch_x_4ch)
             h = h[:, 1:, :] # Skip CLS token -> [B, 1024, 768]
             B = batch_x_4ch.size(0)
-            h = h.reshape(B, 16, 64, h.size(-1)).mean(dim=1).float() # [B, 64, 768]
+            D = h.size(-1)
+            # Reshape [B, 16, 64, D] -> Permute to [B, 64, 16, D] -> Flatten frequency bands to [B, 64, 16 * D]
+            h = h.reshape(B, 16, 64, D).permute(0, 2, 1, 3).reshape(B, 64, 16 * D).float()
 
             trimmed_hidden_states = []
             for wav_idx, wav in enumerate(wavs):
@@ -191,13 +195,14 @@ class UpstreamExpert(torch.nn.Module):
             padded_h = pad_sequence(trimmed_hidden_states, batch_first=True)
             return {"hidden_states": [padded_h.to(device)]}
 
-        wavs_len = [len(wav) for wav in wavs]
+        wavs_clean = [wav[0] if wav.ndim == 2 else wav for wav in wavs]
+        wavs_len = [len(wav) for wav in wavs_clean]
         max_wav_len = max(wavs_len)
         start_points = list(range(0, max_wav_len, int(self.stride_secs * SAMPLE_RATE)))
         padded_max_wav_len = start_points[-1] + int(self.window_secs * SAMPLE_RATE)
         padded_wavs = [
             torch.cat([wav, wav.new_zeros(padded_max_wav_len - len(wav))])
-            for wav in wavs
+            for wav in wavs_clean
         ]
 
         all_features = []
