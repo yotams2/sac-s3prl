@@ -143,55 +143,74 @@ class UpstreamExpert(torch.nn.Module):
     def forward(self, wavs):
         if hasattr(self, 'model_size') and self.model_size == 'binaural_sac':
             device = self.model.spectral_encoder.v.patch_embed.proj.weight.device
-            stft_4ch_list = []
-            for wav in wavs:
-                if wav.ndim == 2 and wav.shape[0] >= 2:
-                    wL = wav[0].cpu().float()
-                    wR = wav[1].cpu().float()
-                    stft_L = torch.stft(wL, n_fft=512, hop_length=160, return_complex=True)
-                    stft_R = torch.stft(wR, n_fft=512, hop_length=160, return_complex=True)
-                    x_4ch = torch.stack([stft_L.real, stft_L.imag, stft_R.real, stft_R.imag], dim=0)
-                elif wav.ndim == 1:
-                    w = wav.cpu().float()
-                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
-                    re, im = stft.real, stft.imag
-                    x_4ch = torch.stack([re, im, re, im], dim=0)
-                else:
-                    w = wav.squeeze(0).cpu().float()
-                    stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
-                    re, im = stft.real, stft.imag
-                    x_4ch = torch.stack([re, im, re, im], dim=0)
+            CHUNK_SAMPLES = 1024 * 160  # 163,840 samples (~10.24 seconds)
+            max_wav_len = max(wav.shape[-1] for wav in wavs)
+            start_points = list(range(0, max(1, max_wav_len), CHUNK_SAMPLES))
 
-                # Frequency dimension to 256
-                if x_4ch.shape[1] > 256:
-                    x_4ch = x_4ch[:, :256, :]
-                elif x_4ch.shape[1] < 256:
-                    x_4ch = torch.nn.functional.pad(x_4ch, (0, 0, 0, 256 - x_4ch.shape[1]))
+            chunk_h_list = []
+            for start in start_points:
+                chunk_end = start + CHUNK_SAMPLES
+                stft_4ch_list = []
+                for wav in wavs:
+                    if wav.ndim == 2 and wav.shape[0] >= 2:
+                        w_slice = wav[:, start:chunk_end]
+                        if w_slice.shape[-1] < CHUNK_SAMPLES:
+                            w_slice = torch.nn.functional.pad(w_slice, (0, CHUNK_SAMPLES - w_slice.shape[-1]))
+                        wL = w_slice[0].cpu().float()
+                        wR = w_slice[1].cpu().float()
+                        stft_L = torch.stft(wL, n_fft=512, hop_length=160, return_complex=True)
+                        stft_R = torch.stft(wR, n_fft=512, hop_length=160, return_complex=True)
+                        x_4ch = torch.stack([stft_L.real, stft_L.imag, stft_R.real, stft_R.imag], dim=0)
+                    elif wav.ndim == 1:
+                        w_slice = wav[start:chunk_end]
+                        if w_slice.shape[-1] < CHUNK_SAMPLES:
+                            w_slice = torch.nn.functional.pad(w_slice, (0, CHUNK_SAMPLES - w_slice.shape[-1]))
+                        w = w_slice.cpu().float()
+                        stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
+                        re, im = stft.real, stft.imag
+                        x_4ch = torch.stack([re, im, re, im], dim=0)
+                    else:
+                        w_slice = wav.squeeze(0)[start:chunk_end]
+                        if w_slice.shape[-1] < CHUNK_SAMPLES:
+                            w_slice = torch.nn.functional.pad(w_slice, (0, CHUNK_SAMPLES - w_slice.shape[-1]))
+                        w = w_slice.cpu().float()
+                        stft = torch.stft(w, n_fft=512, hop_length=160, return_complex=True)
+                        re, im = stft.real, stft.imag
+                        x_4ch = torch.stack([re, im, re, im], dim=0)
 
-                # Time dimension to 1024
-                if x_4ch.shape[2] < 1024:
-                    x_4ch = torch.nn.functional.pad(x_4ch, (0, 1024 - x_4ch.shape[2]))
-                elif x_4ch.shape[2] > 1024:
-                    x_4ch = x_4ch[:, :, :1024]
+                    # Frequency dimension to 256
+                    if x_4ch.shape[1] > 256:
+                        x_4ch = x_4ch[:, :256, :]
+                    elif x_4ch.shape[1] < 256:
+                        x_4ch = torch.nn.functional.pad(x_4ch, (0, 0, 0, 256 - x_4ch.shape[1]))
 
-                stft_4ch_list.append(x_4ch)
+                    # Time dimension to 1024
+                    if x_4ch.shape[2] < 1024:
+                        x_4ch = torch.nn.functional.pad(x_4ch, (0, 1024 - x_4ch.shape[2]))
+                    elif x_4ch.shape[2] > 1024:
+                        x_4ch = x_4ch[:, :, :1024]
 
-            batch_x_4ch = torch.stack(stft_4ch_list, dim=0).to(device)
-            # Allow gradients when runner is in upstream_trainable mode (-f)
-            h = self.model.spectral_encoder._encode_with_mamba(batch_x_4ch)
-            h = h[:, 1:, :] # Skip CLS token -> [B, 1024, 768]
-            B = batch_x_4ch.size(0)
-            D = h.size(-1)
-            # Reshape [B, 16, 64, D] -> Permute to [B, 64, 16, D] -> Flatten frequency bands to [B, 64, 16 * D]
-            h = h.reshape(B, 16, 64, D).permute(0, 2, 1, 3).reshape(B, 64, 16 * D).float()
+                    stft_4ch_list.append(x_4ch)
 
+                batch_x_4ch = torch.stack(stft_4ch_list, dim=0).to(device)
+                # Allow gradients when runner is in upstream_trainable mode (-f)
+                h = self.model.spectral_encoder._encode_with_mamba(batch_x_4ch)
+                h = h[:, 1:, :] # Skip CLS token -> [B, 1024, 768]
+                B = batch_x_4ch.size(0)
+                D = h.size(-1)
+                # Reshape [B, 16, 64, D] -> Permute to [B, 64, 16, D] -> Flatten frequency bands to [B, 64, 16 * D]
+                h = h.reshape(B, 16, 64, D).permute(0, 2, 1, 3).reshape(B, 64, 16 * D).float()
+                chunk_h_list.append(h)
+
+            all_h = torch.cat(chunk_h_list, dim=1) if len(chunk_h_list) > 1 else chunk_h_list[0]
+
+            from torch.nn.utils.rnn import pad_sequence
             trimmed_hidden_states = []
             for wav_idx, wav in enumerate(wavs):
                 w_len = wav.shape[-1]
-                max_h_len = min(64, max(1, round(w_len / self.get_downsample_rates())))
-                trimmed_hidden_states.append(h[wav_idx, :max_h_len, :])
+                max_h_len = min(all_h.size(1), max(1, round(w_len / self.get_downsample_rates())))
+                trimmed_hidden_states.append(all_h[wav_idx, :max_h_len, :])
 
-            from torch.nn.utils.rnn import pad_sequence
             padded_h = pad_sequence(trimmed_hidden_states, batch_first=True)
             return {"hidden_states": [padded_h.to(device)]}
 
