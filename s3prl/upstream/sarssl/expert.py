@@ -10,16 +10,16 @@ from torch.nn.utils.rnn import pad_sequence
 
 # Need to append the original SAR-SSL codebase to path to load the model properly, 
 # because torch.load() might look for the specific SARSSL classes during unpickling or we need to instantiate it.
-# We will do this dynamically here.
-SAR_SSL_PATH = '/storage/yotam/SAR-SSL/SAR-SSL/code'
-if SAR_SSL_PATH not in sys.path:
-    sys.path.append(SAR_SSL_PATH)
-
-from model import SARSSL
+# We will do this dynamically here, when the upstream is built: s3prl/hub.py imports every upstream,
+# so a module-level import would break all upstreams on machines without SAR-SSL.
+SAR_SSL_PATH = os.environ.get('SAR_SSL_PATH', '/storage/yotam/SAR-SSL/SAR-SSL/code')
 
 class UpstreamExpert(nn.Module):
     def __init__(self, ckpt: str = None, model_config: str = None, **kwargs):
         super().__init__()
+        if SAR_SSL_PATH not in sys.path:
+            sys.path.append(SAR_SSL_PATH)
+        from model import SARSSL
         self.name = "SARSSL"
         
         print(f"[{self.name}] - Loading checkpoint: {ckpt}")
