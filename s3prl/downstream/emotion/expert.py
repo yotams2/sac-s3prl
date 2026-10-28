@@ -44,14 +44,15 @@ class DownstreamExpert(nn.Module):
             meta_data, self.fold.replace('fold', 'Session'), 'test_meta_data.json')
         print(f'[Expert] - Testing path: {test_path}')
         
-        dataset = IEMOCAPDataset(DATA_ROOT, train_path, self.datarc['pre_load'])
+        spatial_data_root = self.datarc.get('spatial_data_root')
+        dataset = IEMOCAPDataset(DATA_ROOT, train_path, self.datarc['pre_load'], spatial_data_root)
         trainlen = int((1 - self.datarc['valid_ratio']) * len(dataset))
         lengths = [trainlen, len(dataset) - trainlen]
         
         torch.manual_seed(0)
         self.train_dataset, self.dev_dataset = random_split(dataset, lengths)
 
-        self.test_dataset = IEMOCAPDataset(DATA_ROOT, test_path, self.datarc['pre_load'])
+        self.test_dataset = IEMOCAPDataset(DATA_ROOT, test_path, self.datarc['pre_load'], spatial_data_root)
 
         model_cls = eval(self.modelrc['select'])
         model_conf = self.modelrc.get(self.modelrc['select'], {})

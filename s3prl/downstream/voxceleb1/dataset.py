@@ -19,6 +19,9 @@ import tqdm
 from pathlib import Path
 
 CACHE_PATH = os.path.join(os.path.dirname(__file__), '.cache/')
+# Spatial jsons store absolute wav paths under JSON_DATA_ROOT; override SAC_DATA_ROOT on other machines.
+JSON_DATA_ROOT = "/storage/yotam/ssamba/data"
+SPATIAL_DATA_ROOT = os.environ.get("SAC_DATA_ROOT", JSON_DATA_ROOT)
 
 
 # Voxceleb 1 Speaker Identification
@@ -32,7 +35,7 @@ class SpeakerClassifiDataset(Dataset):
         self.usage_list = open(self.meta_data, "r").readlines()
 
         split_name = "pretrain" if mode == "train" else ("preval" if mode == "dev" else "pretest")
-        spatial_json = f"/storage/yotam/ssamba/data/voxceleb1_spatial_{split_name}.json"
+        spatial_json = os.path.join(SPATIAL_DATA_ROOT, f"voxceleb1_spatial_{split_name}.json")
         # Distinct check for binaural/simulated VoxCeleb1 vs legacy monaural (/storage/data/voxceleb1)
         is_spatial = (
             (Path(file_path) / "simu").exists()
@@ -46,7 +49,7 @@ class SpeakerClassifiDataset(Dataset):
             import json
             with open(spatial_json, 'r') as fp:
                 items = json.load(fp)['data']
-            self.dataset = [item['wav'] for item in items]
+            self.dataset = [item['wav'].replace(JSON_DATA_ROOT, SPATIAL_DATA_ROOT, 1) for item in items]
             self.label = [int(item['label']) for item in items]
             print(f'[SpeakerClassifiDataset] - Loaded {len(self.dataset)} files for mode {mode}')
         else:
