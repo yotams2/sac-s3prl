@@ -26,6 +26,10 @@ def load_spatial_index(spatial_data_root):
         with open(path_join(spatial_data_root, f'iemocap_spatial_{split}.json'), 'r') as f:
             for item in json.load(f)['data']:
                 wav = item['wav'].replace(JSON_DATA_ROOT, str(spatial_data_root).rstrip('/'), 1)
+                # the first binaural IEMOCAP release sampled sources with replacement: refuse it
+                assert item['orig_rel_path'] not in relpath2spatial, (
+                    f"{item['orig_rel_path']} is simulated more than once in {spatial_data_root}; "
+                    "regenerate binaural IEMOCAP with sac-ssamba/data_generation/regen_iemocap.sh")
                 relpath2spatial[item['orig_rel_path']] = wav
     return relpath2spatial
 
@@ -48,7 +52,8 @@ class IEMOCAPDataset(Dataset):
         self.relpath2spatial = load_spatial_index(spatial_data_root) if spatial_data_root else None
         if self.relpath2spatial is not None:
             missing = [info['path'] for info in self.meta_data if info['path'] not in self.relpath2spatial]
-            assert not missing, f'{len(missing)} utterances have no binaural simulation, e.g. {missing[0]}'
+            assert not missing, (f'{len(missing)} utterances have no binaural simulation, e.g. {missing[0]}; '
+                                 'regenerate binaural IEMOCAP with sac-ssamba/data_generation/regen_iemocap.sh')
             print(f'[IEMOCAPDataset] - Loading binaural IEMOCAP from {spatial_data_root} for {meta_path}')
         _, origin_sr = torchaudio.load(self._wav_path(self.meta_data[0]['path']))
         self.resampler = Resample(origin_sr, SAMPLE_RATE)
